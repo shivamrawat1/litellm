@@ -111,13 +111,17 @@ else
     fi
     if [ -z "$LITELLM_BIN" ] || [ ! -x "$LITELLM_BIN" ]; then
       # pipx not available or failed — create venv in ~/.litellm/venv
-      LITELLM_VENV="${LITELLM_VENV:-${HOME}/.litellm/venv}"
-      info "Creating virtual environment at $LITELLM_VENV…"
-      mkdir -p "$(dirname "$LITELLM_VENV")"
-      "$PYTHON_BIN" -m venv "$LITELLM_VENV"
-      "$LITELLM_VENV/bin/pip" install --upgrade --quiet "${LITELLM_PACKAGE}"
-      LITELLM_BIN="${LITELLM_VENV}/bin/litellm"
-      SCRIPTS_DIR="${LITELLM_VENV}/bin"
+      # Use _venv_dir to avoid unbound LITELLM_VENV with set -u on strict shells
+      _venv_dir="${HOME}/.litellm/venv"
+      if [ -n "${LITELLM_VENV+x}" ]; then
+        _venv_dir="$LITELLM_VENV"
+      fi
+      info "Creating virtual environment at $_venv_dir…"
+      mkdir -p "$(dirname "$_venv_dir")"
+      "$PYTHON_BIN" -m venv "$_venv_dir"
+      "$_venv_dir/bin/pip" install --upgrade --quiet "${LITELLM_PACKAGE}"
+      LITELLM_BIN="$_venv_dir/bin/litellm"
+      SCRIPTS_DIR="$_venv_dir/bin"
     fi
   fi
   if [ -z "$LITELLM_BIN" ] || [ ! -x "$LITELLM_BIN" ]; then
