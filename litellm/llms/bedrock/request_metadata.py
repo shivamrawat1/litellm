@@ -23,7 +23,10 @@ import json
 import re
 from collections.abc import Mapping, Sized
 from dataclasses import dataclass
+from itertools import chain
 from typing import Final, Literal
+
+from pydantic import TypeAdapter
 
 import litellm
 
@@ -38,6 +41,7 @@ _ALLOWED_CHARACTERS: Final = r"[a-zA-Z0-9\s:_@$#=/+,.-]"
 _KEY_PATTERN: Final = re.compile(rf"{_ALLOWED_CHARACTERS}{{1,256}}", re.ASCII)
 _VALUE_PATTERN: Final = re.compile(rf"{_ALLOWED_CHARACTERS}{{0,256}}", re.ASCII)
 _OWNED_HEADER_NAMES: Final[frozenset[str]] = frozenset((BEDROCK_REQUEST_METADATA_HEADER.lower(),))
+_TAG_MEMBERS: Final = TypeAdapter(tuple[object, ...])
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,11 +106,31 @@ def _first_text(sources: tuple[Mapping[str, object], ...], field: str) -> str | 
     return next((value for source in sources if isinstance(value := source.get(field), str)), None)
 
 
+def _source_tag_pairs(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(
+        (f"tag:{tag}", "true")
+        for tag in _TAG_MEMBERS.validate_python(value)
+        if isinstance(tag, str) and tag and _is_forwardable(f"tag:{tag}", "true")
+    )
+
+
+def _tag_pairs(
+    sources: tuple[Mapping[str, object], ...], allowed_fields: tuple[str, ...], budget: int
+) -> tuple[tuple[str, str], ...]:
+    if "tags" not in allowed_fields:
+        return ()
+    candidates: Final = chain.from_iterable(_source_tag_pairs(source.get("tags")) for source in sources)
+    return tuple(dict.fromkeys(candidates))[:budget]
+
+
 def _client_pairs(
     sources: tuple[Mapping[str, object], ...],
     allowed_fields: tuple[str, ...],
     caller_metadata: object,
     budget: int,
+    tag_keys: frozenset[str],
 ) -> tuple[tuple[str, str], ...]:
     spend_logs_pairs: Final = (
         tuple(pair for source in sources for pair in _text_pairs(source.get(BEDROCK_REQUEST_METADATA_CLIENT_FIELD)))
@@ -116,7 +140,7 @@ def _client_pairs(
     candidates: Final = tuple(
         (key, value)
         for key, value in (*_text_pairs(caller_metadata), *spend_logs_pairs)
-        if not _is_reserved(key) and _is_forwardable(key, value)
+        if key not in tag_keys and not _is_reserved(key) and _is_forwardable(key, value)
     )
     first_index: Final = {key: index for index, (key, _) in reversed(tuple(enumerate(candidates)))}
     return tuple(pair for index, pair in enumerate(candidates) if first_index[pair[0]] == index)[:budget]
@@ -147,13 +171,15 @@ def resolve_bedrock_request_metadata(
         return dict(_forwardable_caller_pairs(caller_metadata)) or None
     sources: Final = _metadata_sources(litellm_params)
     identity: Final = _identity_pairs(sources, allowed_fields)
+    tags: Final = _tag_pairs(sources, allowed_fields, BEDROCK_REQUEST_METADATA_MAX_PAIRS - len(identity))
     client: Final = _client_pairs(
         sources=sources,
         allowed_fields=allowed_fields,
         caller_metadata=caller_metadata,
-        budget=BEDROCK_REQUEST_METADATA_MAX_PAIRS - len(identity),
+        budget=BEDROCK_REQUEST_METADATA_MAX_PAIRS - len(identity) - len(tags),
+        tag_keys=frozenset(key for key, _ in tags),
     )
-    resolved: Final = {key: value for key, value in (*identity, *client)}
+    resolved: Final = {key: value for key, value in (*identity, *tags, *client)}
     return resolved or None
 
 

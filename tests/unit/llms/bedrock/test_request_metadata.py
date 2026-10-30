@@ -65,6 +65,81 @@ def converse_body_async(litellm_params_value, optional_params=None):
 CONVERSE_DRIVERS = [converse_body, converse_body_async]
 
 
+@pytest.mark.parametrize("metadata_key", ["metadata", "litellm_metadata"])
+@pytest.mark.parametrize("driver", CONVERSE_DRIVERS)
+def test_opted_in_tags_reach_converse_and_signed_invoke_headers(
+    metadata_key: str, driver: Callable[[Mapping[str, object]], Mapping[str, object]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", [*ALL_FIELDS, "tags"])
+    params: Final = litellm_params(
+        metadata_key, tags=["proj-alpha", "env-prod", "proj-alpha"], spend_logs_metadata={"agent": "triage"}, **IDENTITY
+    )
+    expected: Final = {**IDENTITY, "tag:proj-alpha": "true", "tag:env-prod": "true", "agent": "triage"}
+
+    body: Final = driver(params)
+    invoke_headers: Final = AmazonInvokeConfig().validate_environment(
+        headers={}, model=MODEL, messages=MESSAGES, optional_params={}, litellm_params=params
+    )
+    messages_headers, _ = AmazonAnthropicClaudeMessagesConfig().validate_anthropic_messages_environment(
+        headers={}, model=MODEL, messages=MESSAGES, optional_params={}, litellm_params=params
+    )
+
+    assert body["requestMetadata"] == expected
+    assert json.loads(invoke_headers[BEDROCK_REQUEST_METADATA_HEADER]) == expected
+    assert json.loads(messages_headers[BEDROCK_REQUEST_METADATA_HEADER]) == expected
+
+
+def test_tags_require_their_own_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ALL_FIELDS)
+    params: Final = litellm_params("metadata", tags=["proj-alpha"], **IDENTITY)
+
+    assert resolve_bedrock_request_metadata(params) == IDENTITY
+
+
+@pytest.mark.parametrize("client_source", ["spend_logs_metadata", "requestMetadata"])
+def test_tags_keep_priority_over_client_pairs_without_wasting_duplicate_slots(
+    client_source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ["tags", *ALL_FIELDS])
+    tags: Final = ["proj-alpha", "proj-alpha", "env-prod"]
+    clients: Final = {"tag:proj-alpha": "false", **{f"client{index}": "v" for index in range(16)}}
+    params: Final = litellm_params("metadata", tags=tags, **{client_source: clients}, **IDENTITY)
+    caller: Final = clients if client_source == "requestMetadata" else None
+    expected_clients: Final = {f"client{index}": "v" for index in range(12)}
+
+    assert resolve_bedrock_request_metadata(params, caller) == {
+        **IDENTITY, "tag:proj-alpha": "true", "tag:env-prod": "true", **expected_clients
+    }
+
+
+def test_excess_tags_cannot_evict_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ["tags", *ALL_FIELDS])
+    params: Final = litellm_params("metadata", tags=[f"tag{index}" for index in range(20)], **IDENTITY)
+
+    assert resolve_bedrock_request_metadata(params) == {
+        **IDENTITY, **{f"tag:tag{index}": "true" for index in range(14)}
+    }
+
+
+@pytest.mark.parametrize("tags", [None, "proj-alpha", {"proj-alpha": "true"}, [None, 1, [], {}]])
+def test_malformed_tag_containers_and_members_are_ignored(tags: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ["tags", *ALL_FIELDS])
+
+    assert resolve_bedrock_request_metadata(litellm_params("metadata", tags=tags, **IDENTITY)) == IDENTITY
+
+
+def test_invalid_tags_drop_without_rewriting_and_both_metadata_sources_are_deduplicated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ["tags"])
+    params: Final = {
+        "metadata": {"tags": ["", "bad!", "naïve", "x" * 253, "x" * 252, "valid"]},
+        "litellm_metadata": {"tags": ["valid", "other"]},
+    }
+
+    assert resolve_bedrock_request_metadata(params) == {"tag:" + "x" * 252: "true", "tag:valid": "true", "tag:other": "true"}
+
+
 @pytest.mark.parametrize("setting", [None, []])
 def test_feature_off_by_default_leaves_body_and_headers_untouched(setting, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", setting)
@@ -386,6 +461,24 @@ def converse_headers(caller_headers, params):
 
 
 HEADER_DRIVERS = [invoke_headers, messages_headers, openai_invoke_headers, converse_headers]
+
+
+@pytest.mark.parametrize("metadata_key", ["metadata", "litellm_metadata"])
+@pytest.mark.parametrize("driver", HEADER_DRIVERS)
+def test_opted_in_tags_reach_every_metadata_header_driver(
+    metadata_key: str,
+    driver: Callable[[Mapping[str, str], Mapping[str, object]], Mapping[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", [*ALL_FIELDS, "tags"])
+    params: Final = litellm_params(metadata_key, tags=["proj-alpha", "env-prod"], **IDENTITY)
+    headers: Final = driver({}, params)
+
+    assert json.loads(headers[BEDROCK_REQUEST_METADATA_HEADER]) == {
+        **IDENTITY,
+        "tag:proj-alpha": "true",
+        "tag:env-prod": "true",
+    }
 
 
 def metadata_header_values(headers):

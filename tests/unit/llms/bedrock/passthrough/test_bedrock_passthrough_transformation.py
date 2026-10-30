@@ -903,15 +903,18 @@ def test_stream_collector_logs_nothing_for_an_unrecognized_endpoint():
 
 
 REQUEST_METADATA_HEADER = "x-amzn-bedrock-request-metadata"
-REQUEST_METADATA_FIELDS = ["user_api_key_alias", "user_api_key_team_alias", "spend_logs_metadata"]
+REQUEST_METADATA_FIELDS = ["user_api_key_alias", "user_api_key_team_alias", "tags", "spend_logs_metadata"]
 PROXY_IDENTITY = {
     "user_api_key_alias": "prod-key",
     "user_api_key_team_alias": "platform",
+    "tags": ["proj-alpha", "env-prod", "proj-alpha"],
     "spend_logs_metadata": {"agent": "triage-bot"},
 }
 EXPECTED_REQUEST_METADATA = {
     "user_api_key_alias": "prod-key",
     "user_api_key_team_alias": "platform",
+    "tag:proj-alpha": "true",
+    "tag:env-prod": "true",
     "agent": "triage-bot",
 }
 CONVERSE_BODY = {"messages": [{"role": "user", "content": [{"text": "hi"}]}]}
@@ -1133,7 +1136,13 @@ async def test_invoke_metadata_too_long_for_the_header_sends_the_leading_pairs_t
     monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", REQUEST_METADATA_FIELDS)
     long_pairs: Final = {f"{index:02d}".ljust(256, "k"): "\n" * 256 for index in range(12)}
     resolved: Final = tuple(
-        {"user_api_key_alias": "prod-key", "user_api_key_team_alias": "platform", **long_pairs}.items()
+        {
+            "user_api_key_alias": "prod-key",
+            "user_api_key_team_alias": "platform",
+            "tag:proj-alpha": "true",
+            "tag:env-prod": "true",
+            **long_pairs,
+        }.items()
     )
 
     request: Final = await _sent_passthrough_request(

@@ -1,11 +1,11 @@
 import base64
 import json
 import uuid
-from urllib.parse import unquote
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+from urllib.parse import unquote
 
 import boto3
 import pytest
@@ -156,6 +156,7 @@ def rig(session_gateway: Gateway, tmp_path_factory: pytest.TempPathFactory) -> I
                 "bedrock_request_metadata_fields": [
                     "user_api_key_alias",
                     "user_api_key_team_alias",
+                    "tags",
                     "spend_logs_metadata",
                 ],
             },
@@ -167,7 +168,7 @@ def rig(session_gateway: Gateway, tmp_path_factory: pytest.TempPathFactory) -> I
             proxy.scenario() as scenario,
         ):
             team_alias: Final = f"platform-{suffix}"
-            team_id: Final = scenario.team(team_alias=team_alias)
+            team_id: Final = scenario.team(team_alias=team_alias, metadata={"tags": ["team-tag"]})
             key_alias: Final = f"prod-key-{suffix}"
             long_key_alias: Final = f"long-key-{suffix}"
             yield Rig(
@@ -179,11 +180,14 @@ def rig(session_gateway: Gateway, tmp_path_factory: pytest.TempPathFactory) -> I
                 key=scenario.key(
                     key_alias=key_alias,
                     team_id=team_id,
-                    metadata={"spend_logs_metadata": {"agent": "triage-bot"}},
+                    metadata={"tags": ["proj-alpha", "env-prod"], "spend_logs_metadata": {"agent": "triage-bot"}},
                 ),
                 identity={
                     "user_api_key_alias": key_alias,
                     "user_api_key_team_alias": team_alias,
+                    "tag:proj-alpha": "true",
+                    "tag:env-prod": "true",
+                    "tag:team-tag": "true",
                     "agent": "triage-bot",
                 },
                 long_key=scenario.key(
@@ -194,6 +198,7 @@ def rig(session_gateway: Gateway, tmp_path_factory: pytest.TempPathFactory) -> I
                 long_identity=(
                     ("user_api_key_alias", long_key_alias),
                     ("user_api_key_team_alias", team_alias),
+                    ("tag:team-tag", "true"),
                     *_LONG_SPEND_LOGS_METADATA,
                 ),
             )
