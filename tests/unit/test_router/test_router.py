@@ -4964,9 +4964,9 @@ def test_adopt_fallback_response_headers_replaces_rather_than_merges():
     assert wrapper._hidden_params["model_id"] == "fallback-deployment"
     assert "only_on_failed_attempt" not in wrapper._hidden_params
     assert wrapper._hidden_params is not fallback._hidden_params
-    # the snapshot CustomStreamWrapper caches at init has to follow, or a chunk built
-    # from it would still be stamped with the deployment that failed
-    assert wrapper._base_hidden_params["model_id"] == "fallback-deployment"
+    chunk: Final = wrapper.model_response_creator()
+    assert chunk._hidden_params["model_id"] == "fallback-deployment"
+    assert "only_on_failed_attempt" not in chunk._hidden_params
     # the nested header dict is copied too, so a later mutation on the fallback
     # response cannot reach headers the proxy has already published
     assert wrapper._hidden_params["additional_headers"] is not fallback._hidden_params["additional_headers"]

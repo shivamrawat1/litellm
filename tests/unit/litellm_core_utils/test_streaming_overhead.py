@@ -6,8 +6,9 @@ per-stream caches (_GCHUNK_FIELDS, _post_streaming_hooks).
 """
 
 import asyncio
+import datetime
 import time
-from typing import List, Optional
+from typing import Final, List, Optional
 from unittest.mock import MagicMock, patch
 
 import litellm
@@ -16,6 +17,7 @@ from litellm.litellm_core_utils.streaming_handler import (
     _GCHUNK_FIELDS,
     generic_chunk_has_all_required_fields,
 )
+from litellm.litellm_core_utils.llm_response_utils.response_metadata import update_response_metadata
 from litellm.types.utils import (
     Delta,
     GenericStreamingChunk as GChunk,
@@ -172,14 +174,30 @@ def test_cached_model_name_openai_prefix():
     assert wrapper._cached_logging_llm_provider == "azure"
 
 
-def test_base_hidden_params_precomputed():
-    """_base_hidden_params must be pre-built from _hidden_params at init."""
-    wrapper = _make_wrapper([], provider="anthropic")
-    assert "response_cost" in wrapper._base_hidden_params
-    assert wrapper._base_hidden_params["response_cost"] is None
-    # Must include all keys from _hidden_params
-    for k in wrapper._hidden_params:
-        assert k in wrapper._base_hidden_params
+def test_model_response_creator_uses_updated_hidden_params():
+    wrapper: Final = _make_wrapper([], provider="anthropic")
+    logging_obj: Final = wrapper.logging_obj
+    logging_obj.model_call_details["llm_api_duration_ms"] = 800.0
+    logging_obj.caching_details = None
+    logging_obj.callback_duration_ms = None
+    logging_obj.litellm_call_id = "test-call-id"
+    logging_obj.response_cost_calculator = MagicMock(return_value=0.001)
+    start_time: Final = datetime.datetime(2025, 1, 1, 0, 0, 0)
+
+    update_response_metadata(
+        result=wrapper,
+        logging_obj=logging_obj,
+        model="claude-3-5-sonnet",
+        kwargs={},
+        start_time=start_time,
+        end_time=start_time + datetime.timedelta(seconds=1),
+    )
+
+    chunk: Final = wrapper.model_response_creator()
+    overhead: Final = wrapper._hidden_params["litellm_overhead_time_ms"]
+    assert isinstance(overhead, (int, float))
+    assert chunk._hidden_params["litellm_overhead_time_ms"] == overhead
+    assert chunk._hidden_params["response_cost"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +447,7 @@ def test_post_streaming_hooks_filters_correctly():
 
 
 def test_model_response_creator_hidden_params_no_chunk():
-    """model_response_creator() with no args must include all _base_hidden_params."""
+    """model_response_creator() with no args must include the wrapper's hidden params."""
     wrapper = _make_wrapper([], provider="anthropic")
     response = wrapper.model_response_creator()
 

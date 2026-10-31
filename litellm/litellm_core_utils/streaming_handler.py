@@ -438,14 +438,6 @@ class CustomStreamWrapper:
             _effective_model = f"{_cached_logging_provider}/{_effective_model}"
         self._cached_model_name: str = _effective_model
 
-        # Snapshot assumes self._hidden_params is populated from litellm_params
-        # at init and never mutated during the stream. If that ever changes,
-        # this cache must be removed.
-        self._base_hidden_params: dict[str, object] = {
-            **self._hidden_params,
-            "response_cost": None,
-        }
-
         self._post_streaming_hooks: list | None = None
 
     def _check_max_streaming_duration(self) -> None:
@@ -941,21 +933,21 @@ class CustomStreamWrapper:
         else:
             self.created = model_response.created
 
-        # Spread order is load-bearing: _base_hidden_params (model_id, api_base, ...)
-        # must win over both caller-supplied hidden_params and the computed
-        # custom_llm_provider/created_at values, so it comes last.
+        # Spread order is load-bearing: self._hidden_params wins, then response_cost stays None.
         if hidden_params is not None:
             model_response.hidden_params = {
                 **hidden_params,
                 "custom_llm_provider": _logging_obj_llm_provider,
                 "created_at": time.time(),
-                **self._base_hidden_params,
+                **self._hidden_params,
+                "response_cost": None,
             }
         else:
             model_response.hidden_params = {
                 "custom_llm_provider": _logging_obj_llm_provider,
                 "created_at": time.time(),
-                **self._base_hidden_params,
+                **self._hidden_params,
+                "response_cost": None,
             }
 
         if len(model_response.choices) > 0 and getattr(model_response.choices[0], "delta") is not None:
